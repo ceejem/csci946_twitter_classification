@@ -1,0 +1,203 @@
+import pandas as pd
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+import nltk
+from nltk.corpus import stopwords, wordnet
+from nltk.stem import WordNetLemmatizer
+import string
+import re
+
+"""We read the csv to makes a dataframe to work on"""
+
+df = pd.read_csv("twitter_user_data.csv", encoding = "ISO-8859-1")
+print(df.head())
+
+"""description column has some missing columns, fill them with empyt space strings ''."""
+
+df['description'] = df['description'].apply(lambda x: '' if pd.isnull(x) else x)
+
+"""We extract the text columns
+Also add gender for separating data later
+"""
+
+text_df = df[['description', 'name', 'text', 'gender']]
+print(text_df.head(10))
+
+"""
+mark any text+description that has hyperlinks and then delete hyperlinks from text
+"""
+text_df["text_has_hyperlink"] = text_df["text"].apply(lambda x: ('http' in x))
+text_df["text"]= text_df["text"].apply(lambda x: re.sub(r"\S*http\S+", "", x))
+
+text_df["desc_has_hyperlink"] = text_df["description"].apply(lambda x: ('http' in x))
+text_df["description"]= text_df["description"].apply(lambda x: re.sub(r"\S*http\S+", "", x))
+
+"""
+emojis and other things leads to lots of encoding issues
+take out all not basic latin encode
+"""
+basic_latin = [chr(i) for i in range(32, 126+1)
+               ]
+def is_basic_latin_only(string):
+  basic_latin_only = True
+  for i in range(len(string)):
+    if not (string[i] in basic_latin):
+      basic_latin_only = False
+  return basic_latin_only
+
+text_df["text_basic_latin_only"] = text_df["text"].apply(lambda x: is_basic_latin_only(x))
+
+def filter_basic_latin(string):
+  filter_char_list = []
+  for i in range(len(string)):
+    if not (string[i] in basic_latin):
+      filter_char_list.append(string[i])
+  for char in filter_char_list:
+    string = re.sub(r"\S*"+char+r"\S*", "", string)
+  return string
+
+text_df["text"] = text_df["text"].apply(lambda x: filter_basic_latin(x))
+
+text_df["desc_basic_latin_only"] = text_df["description"].apply(lambda x: is_basic_latin_only(x))
+text_df["description"] = text_df["description"].apply(lambda x: filter_basic_latin(x))
+    
+print(text_df.head(10))
+
+"""Tokenize description and text
+We try two kinds of tokenizations:
+ One is the recommended tokenization in general (destructive)
+ One is good for tweets apparently (casual)
+"""
+
+nltk.download('punkt')
+
+def token_column(func_df, column, token_func):
+  tokens_list = []
+  for i in range(len(func_df)):
+    column_i = func_df.loc[i, column]
+    #convert all to lower case/Capital Case/UPPER case(?) for easier comparison later
+    column_i = column_i.lower()
+    column_tokens_i = token_func(column_i)
+    tokens_list.append(column_tokens_i)
+  return tokens_list
+
+text_df['text_token_destructive'] = token_column(text_df, 'text', nltk.word_tokenize)
+text_df['description_token_destructive'] = token_column(text_df, 'description', nltk.word_tokenize)
+
+from nltk.tokenize import TweetTokenizer
+
+text_df['text_token_casual'] = token_column(text_df, 'text', TweetTokenizer().tokenize)
+text_df['description_token_casual'] = token_column(text_df, 'description', TweetTokenizer().tokenize)
+
+#print(text_df.head())
+
+print(text_df[['text_token_destructive', 'description_token_destructive']].head(10))
+
+print(text_df[['text_token_casual', 'description_token_casual']].head(10))
+
+"""list of stopwords to consider filtering"""
+
+nltk.download('stopwords')
+my_stopwords = stopwords.words('english')
+#add anymore you think are legitimate and missing
+my_stopwords.append("i'd")
+my_stopwords.append("i'm")
+my_stopwords.append("i've")
+my_stopwords.append("n't")
+  #due to bad grammar of Tweets, add in contractions that leave out the apostrophe
+  #in the destructive tokenization, the end of a contraction is prepended with an apostrophe -- reflect this
+L = len(my_stopwords)
+for i in range(L):
+  if "'" in my_stopwords[i]:
+    temp_word = my_stopwords[i].replace("'", "")
+    my_stopwords.append(temp_word)
+
+    temp_word = my_stopwords[i][my_stopwords[i].index("'"):]
+    my_stopwords.append(temp_word)
+my_stopwords = list(set(my_stopwords))
+print(my_stopwords)
+
+"""Create a filtered version via the stopwords"""
+
+def stopwords_filter_column(func_df, token_column):
+  filtered_token_list_list = []
+  for i in range(len(func_df)):
+    filtered_token_list = []
+    token_list_i = func_df.loc[i, token_column]
+    for word in token_list_i:
+      if not (word in my_stopwords):
+        filtered_token_list.append(word)
+    filtered_token_list_list.append(filtered_token_list)
+  return filtered_token_list_list
+
+text_df['text_token_destructive_filtered'] = stopwords_filter_column(text_df, 'text_token_destructive')
+text_df['description_token_destructive_filtered'] = stopwords_filter_column(text_df, 'description_token_destructive')
+
+text_df['text_token_casual_filtered'] = stopwords_filter_column(text_df, 'text_token_casual')
+text_df['description_token_casual_filtered'] = stopwords_filter_column(text_df, 'description_token_casual')
+
+print(text_df[['text_token_destructive_filtered', 'description_token_destructive_filtered']].head(10))
+
+print(text_df[['text_token_casual_filtered', 'description_token_casual_filtered']].head(10))
+
+"""Change words based off lemmatisation."""
+
+nltk.download('wordnet')
+def lemmatization_filter_column(func_df, token_column):
+  filtered_token_list_list = []
+  for i in range(len(func_df)):
+    filtered_token_list = []
+    token_list_i = func_df.loc[i, token_column]
+    for word in token_list_i:
+      pos_list = [wordnet.NOUN, wordnet.VERB, wordnet.ADJ, wordnet.ADV]
+      lemma_word = word
+      j = 0
+      while (lemma_word == word) and j<len(pos_list):
+        lemma_word = WordNetLemmatizer().lemmatize(word, pos=pos_list[j])
+        j += 1
+      filtered_token_list.append(lemma_word)
+    filtered_token_list_list.append(filtered_token_list)
+  return filtered_token_list_list
+
+text_df['text_token_destructive_filtered'] = lemmatization_filter_column(text_df, 'text_token_destructive_filtered')
+text_df['description_token_destructive_filtered'] = lemmatization_filter_column(text_df, 'description_token_destructive_filtered')
+
+text_df['text_token_casual_filtered'] = lemmatization_filter_column(text_df, 'text_token_casual_filtered')
+text_df['description_token_casual_filtered'] = lemmatization_filter_column(text_df, 'description_token_casual_filtered')
+
+print(text_df[['text_token_destructive_filtered', 'description_token_destructive_filtered']].head(10))
+
+print(text_df[['text_token_casual_filtered', 'description_token_casual_filtered']].head(10))
+
+"""See if 'name' contains any buzzwords (e.g. news)"""
+
+"""export to csv"""
+text_df.to_csv('twitter_text_data_processed.csv')
+
+"""Have a look at the TFIDF"""
+
+text_df['text_destructive_filtered'] = text_df['text_token_destructive_filtered'].apply(lambda x: ' '.join(x))
+text_df['description_destructive_filtered'] = text_df['description_token_destructive_filtered'].apply(lambda x: ' '.join(x))
+text_df['text_casual_filtered'] = text_df['text_token_casual_filtered'].apply(lambda x: ' '.join(x))
+text_df['description_casual_filtered'] = text_df['description_token_casual_filtered'].apply(lambda x: ' '.join(x))
+
+
+def tfidf_df(func_df, column):
+  vectorizer = TfidfVectorizer()
+  vectors = vectorizer.fit_transform(func_df[column])
+  feature_names = vectorizer.get_feature_names_out()
+  print(vectors.getrow(0))
+  print(feature_names[28057])
+  print(feature_names[8199])
+  #dense = vectors.todense()
+  #dense_list = dense.tolist()
+  """this method wasnt scaling well enough,
+  the sparse matrix method toarray worked very well"""
+  dense_list = vectors.toarray()
+  df = pd.DataFrame(dense_list, columns=feature_names)
+  return df
+
+text_destructive_tfidf_df = tfidf_df(text_df, 'text_destructive_filtered')
+description_destructive_tfidf_df = tfidf_df(text_df, 'description_destructive_filtered')
+text_casual_tfidf_df = tfidf_df(text_df, 'text_casual_filtered')
+description_casual_tfidf_df = tfidf_df(text_df, 'description_casual_filtered')
